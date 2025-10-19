@@ -58,13 +58,22 @@ def get_clue_for_animal(client: OpenAI, animal: str, difficulty: str) -> str:
     Easy: more obvious; Medium: balanced; Hard: subtle/cryptic.
     Returns the clue string.
     """
+    system_prompt = {
+        "role": "system",
+        "content": (
+            "You are a cheerful word guessing game host. "
+            "You give short, friendly hints and never reveal the answer directly. "
+            "Encourage the user after every guess."
+        )
+    }
+    
     difficulty_guidance = {
         "easy": "Provide a clear, fairly obvious clue a casual player could guess.",
         "medium": "Provide a balanced clue that suggests but doesn't give away.",
         "hard": "Provide a subtle, cryptic clue focusing on less-known traits.",
     }
     system_instructions = (
-        "You are the Game Master for a guessing game. "
+        "You are a cheerful Game Master for a guessing game. "
         "Produce ONE concise clue for the specified animal. Do NOT reveal the animal's name. "
         "Respond ONLY as a strict JSON object with key 'clue'."
     )
@@ -73,12 +82,15 @@ def get_clue_for_animal(client: OpenAI, animal: str, difficulty: str) -> str:
         f"Guidance: {difficulty_guidance.get(difficulty, '')}\n"
         "Return JSON like {\"clue\": \"I purr and love naps on sunny windowsills.\"}"
     )
-    resp = client.responses.create(
+    resp = client.chat.completions.create(
         model="gpt-4o-mini",
-        instructions=system_instructions,
-        input=user_prompt,
+        messages=[
+            system_prompt,
+            {"role": "user", "content": user_prompt}
+        ]
     )
-    text = resp.output_text.strip()
+    text = resp.choices[0].message.content.strip()
+    print(f"[DEBUG] AI Response: {text}")  # Debug output
     try:
         data = json.loads(text)
         clue = str(data.get("clue", "")).strip()
@@ -86,57 +98,71 @@ def get_clue_for_animal(client: OpenAI, animal: str, difficulty: str) -> str:
             return clue
     except json.JSONDecodeError:
         pass
-    # Fallback simple clue per difficulty
+    # Fallback constructive clues per difficulty
     if difficulty == "easy":
-        return "This animal is well-known for its distinctive, easily recognized trait."
+        return "This animal has a very distinctive feature that most people recognize immediately - think about what makes it unique!"
     if difficulty == "hard":
-        return "Consider a lesser-known aspect of its behavior or anatomy."
-    return "Think about where it lives and a notable behavior."
+        return "Focus on a subtle characteristic - perhaps its hunting style, sleeping habits, or a lesser-known physical trait."
+    return "Consider both its habitat and a specific behavior pattern - where does it live and what does it do there?"
 
 
 def validate_guess_with_llm(client: OpenAI, animal: str, guess: str) -> bool:
     """Ask the model if the guess matches the secret animal (allowing synonyms and case-insensitive match).
     Returns True if it's a match, False otherwise.
     """
-    system_instructions = (
-        "You determine whether a user's guess refers to the same animal as the secret. "
-        "Consider synonyms, plural/singular, common nicknames, and case-insensitivity. "
-        "Output ONLY JSON with key 'match' set to true or false."
-    )
+    system_prompt = {
+        "role": "system",
+        "content": (
+            "You are a cheerful word guessing game host. "
+            "You give short, friendly hints and never reveal the answer directly. "
+            "Encourage the user after every guess."
+        )
+    }
 
     user_prompt = (
         f"Secret animal: '{animal}'. User guess: '{guess}'.\n"
         "Respond strictly as JSON, e.g., {\"match\": true}."
     )
 
-    resp = client.responses.create(
-        model="gpt-4o-mini",
-        instructions=system_instructions,
-        input=user_prompt,
-    )
-    text = resp.output_text.strip()
+    resp = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[
+        system_prompt,
+        {"role": "user", "content": user_prompt}
+    ],
+    max_tokens=80,     # keeps clues concise
+    temperature=0.7,   # gives creative, friendly clues
+    top_p=0.9          # balances creativity and consistency
+)
+    text = resp.choices[0].message.content.strip()
+    print(f"[DEBUG] Validation response: {text}")  # Debug output
     try:
         data = json.loads(text)
         match = data.get("match")
+        print(f"[DEBUG] Match result: {match}")  # Debug output
         return bool(match)
     except json.JSONDecodeError:
+        print(f"[DEBUG] JSON parse failed, using fallback")  # Debug output
         # Fallback heuristic if JSON parsing failed
         normalized_animal = animal.lower().strip()
         normalized_guess = guess.lower().strip()
-        return normalized_animal == normalized_guess
+        result = normalized_animal == normalized_guess
+        print(f"[DEBUG] Fallback result: {result}")  # Debug output
+        return result
 
 
 def get_additional_hint(client: OpenAI, animal: str, existing_hints: list[str]) -> str:
     """Ask the model for one more concise hint about the same animal.
     Ensures the hint does not repeat any in existing_hints.
     """
-    system_instructions = (
-        "You provide ONE extra concise hint about a secret animal. "
-        "Do NOT reveal the animal name or give trivially identifying words. "
-        "Avoid repeating the previous clue and focus on a different aspect (behavior, habitat, anatomy). "
-        "Respond ONLY as a strict JSON object: {\"hint\": "
-        "string}."
-    )
+    system_prompt = {
+        "role": "system",
+        "content": (
+            "You are a cheerful word guessing game host. "
+            "You give short, friendly hints and never reveal the answer directly. "
+            "Encourage the user after every guess."
+        )
+    }
 
     # Try up to 3 times to get a unique hint from the model
     for _ in range(3):
@@ -146,12 +172,14 @@ def get_additional_hint(client: OpenAI, animal: str, existing_hints: list[str]) 
             "Return strictly JSON like {\"hint\": \"I have stripes but am not easily domesticated.\"}"
         )
 
-        resp = client.responses.create(
-            model="gpt-4o-mini",
-            instructions=system_instructions,
-            input=user_prompt,
+        resp = client.chat.completions.create(
+            model="gpt-5",
+            messages=[
+                system_prompt,
+                {"role": "user", "content": user_prompt}
+            ]
         )
-        text = resp.output_text.strip()
+        text = resp.choices[0].message.content.strip()
         try:
             data = json.loads(text)
             hint = str(data.get("hint", "")).strip()
@@ -160,19 +188,41 @@ def get_additional_hint(client: OpenAI, animal: str, existing_hints: list[str]) 
         except json.JSONDecodeError:
             continue
 
-    # Fallback generic non-revealing unique hint
+    # Fallback constructive unique hints
     fallback_pool = [
-        "Consider its typical habitat and a distinctive behavior.",
-        "Think about its diet and how it gets food.",
-        "Focus on a unique body feature that stands out.",
-        "Is it more active during day or night?",
-        "Consider the sounds it makes and why.",
+        "Think about its natural habitat - where does this animal typically live and what environment suits it best?",
+        "Consider its diet and feeding habits - what does it eat and how does it find or catch its food?",
+        "Focus on a distinctive physical feature - what unique body part or characteristic makes this animal special?",
+        "When is it most active - does it hunt, forage, or move around more during the day or night?",
+        "What sounds does it make - does it roar, chirp, hiss, or make other distinctive noises and why?",
     ]
     for candidate in fallback_pool:
         if candidate not in existing_hints:
             return candidate
     # If everything failed, return a generic line guaranteed to differ slightly
     return f"Another angle: think habitat + behavior ({random.randint(1, 9999)})."
+
+
+def is_polite_request(text: str) -> bool:
+    """Check if the user's request is polite/kind."""
+    polite_words = ["please", "thank you", "thanks", "kindly", "would you", "could you", "may i"]
+    rude_words = ["just", "already", "hurry", "quickly", "now", "damn", "stupid", "idiot", "rude", "mean", "angry", "mad"]
+    
+    text_lower = text.lower()
+    
+    # Check for polite indicators
+    has_polite = any(word in text_lower for word in polite_words)
+    
+    # Check for rude indicators
+    has_rude = any(word in text_lower for word in rude_words)
+    
+    # Also check for question marks and exclamation patterns
+    has_question = "?" in text
+    has_imperative = text.endswith("!") and not has_question
+    
+    result = has_polite or (has_question and not has_rude) or (not has_imperative and not has_rude)
+    print(f"[DEBUG] Text: '{text}' | Polite: {has_polite} | Rude: {has_rude} | Result: {result}")
+    return result
 
 
 def play_single_round(client: OpenAI, category: str, difficulty: str) -> bool:
@@ -193,10 +243,13 @@ def play_single_round(client: OpenAI, category: str, difficulty: str) -> bool:
     print("\nNew round!")
     print(f"Category: {category.capitalize()}, Difficulty: {difficulty.capitalize()}")
     print(f"Clue: {clue}")
+    print("🎮 Good luck! I believe in you! 🌟")
 
-    max_attempts = 5
+    max_attempts = 3
     score = 100
     penalty_per_wrong = 20
+    rude_count = 0
+    
     for attempt in range(1, max_attempts + 1):
         guess = input(f"Attempt {attempt}/{max_attempts} - Your guess: ")
         if not guess.strip():
@@ -205,15 +258,49 @@ def play_single_round(client: OpenAI, category: str, difficulty: str) -> bool:
 
         is_match = validate_guess_with_llm(client, animal, guess)
         if is_match:
-            print("Congratulations! You guessed it right!")
+            print("🎉 Congratulations! You guessed it right!")
             print(f"Score: {max(score, 0)}")
             return True
         else:
+            # Encouragement after wrong guess
+            encouragements = [
+                "💪 Don't give up! You're getting closer!",
+                "🌟 Keep trying! You've got this!",
+                "🚀 You're on the right track!",
+                "✨ Great effort! Try again!",
+                "🎯 You're learning! Keep going!"
+            ]
+            print(random.choice(encouragements))
+            
             if attempt < max_attempts:
-                if attempt == 3:
-                    extra_hint = get_additional_hint(client, animal, shown_hints)
-                    shown_hints.append(extra_hint)
-                    print(f"Extra hint: {extra_hint}")
+                # After first wrong guess, ask if they want hints
+                if attempt == 1:
+                    print("\n💡 Would you like a hint? (Ask nicely!)")
+                    hint_request = input("Your request: ").strip()
+                    
+                    if is_polite_request(hint_request):
+                        extra_hint = get_additional_hint(client, animal, shown_hints)
+                        shown_hints.append(extra_hint)
+                        print(f"🌟 Extra hint: {extra_hint}")
+                        print("💡 That should help! You're doing great!")
+                    else:
+                        rude_count += 1
+                        if rude_count == 1:
+                            print("😊 It's better to be kind if you want to win the game! Try asking nicely.")
+                            # Give them another chance
+                            hint_request = input("Try again (ask nicely): ").strip()
+                            if is_polite_request(hint_request):
+                                extra_hint = get_additional_hint(client, animal, shown_hints)
+                                shown_hints.append(extra_hint)
+                                print(f"🌟 Extra hint: {extra_hint}")
+                                print("💡 That should help! You're doing great!")
+                            else:
+                                print("😔 I'm ending this game. Please be more respectful next time!")
+                                return False
+                        else:
+                            print("😔 I'm ending this game. Please be more respectful next time!")
+                            return False
+                
                 print("Try again!")
                 score -= penalty_per_wrong
             else:
